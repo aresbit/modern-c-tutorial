@@ -1,0 +1,21 @@
+title: Modern C 入门教程
+description: 从函数式编程视角学习C语言 —— 类型理论、代数数据类型与计算延续
+theme: jekyll-theme-minimal
+baseurl: /modern-c-tutorial
+url: https://aresbit.github.io
+
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+
+plugins:
+  - jekyll-relative-links
+
+relative_links:
+  enabled: true
+  collections: true
+
+include:
+  - README.md
+  - "*.md"
