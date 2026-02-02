@@ -141,9 +141,167 @@ add_then(2, 3, with_result);
 
 指针在这里扮演了关键角色——它让我们可以传递"接下来做什么"的信息。
 
-## 5.6 函数指针：一等函数的幻觉
+### CPS与函数指针的深度结合
 
-C语言不支持一等函数（first-class functions），但函数指针给了我们一个近似：
+**Continuation Passing Style (CPS)** 是一种编程风格，其特点是函数接受一个额外的延续参数（continuation），并通过调用该延续而不是返回到调用者来完成计算。
+
+在C语言中，函数指针使CPS风格成为可能。让我们通过一个完整的链表反转示例来理解：
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+/* 整数链表类型 - 使用const确保不可变性 */
+typedef struct __int_list const *const int_list_t;
+static int_list_t const Nil = NULL; /* 空链表 */
+
+/* 单链表元素 */
+typedef struct __int_list {
+    int_list_t next;
+    int32_t const val;
+} node_t;
+
+/* CPS结果指针：指向存储计算结果的位置 */
+typedef void *const CPS_Result;
+
+/* 延续类型定义 */
+typedef void (*MakeListCallback)(int_list_t list, CPS_Result res);
+typedef void (*ReversedListCallback)(int_list_t rlist, CPS_Result res);
+typedef void (*VoidMappable)(int32_t const val);
+
+/* 函数声明 */
+void make_list(uint32_t const arr_size,
+               int32_t const array[],
+               int_list_t lst,
+               MakeListCallback const cb,
+               CPS_Result res);
+
+void reverse(int_list_t list,
+             int_list_t rlist,
+             ReversedListCallback const cb,
+             CPS_Result res);
+
+void list2array(int_list_t list, CPS_Result res);
+void void_map_array(VoidMappable const cb,
+                    uint32_t const size,
+                    int32_t const *const arr);
+
+/* 反转链表并存入数组 */
+void reverse_toarray(int_list_t list, CPS_Result res) {
+    reverse(list, Nil, list2array, res);
+}
+
+static void print_val(int32_t const val) { printf("%d ", val); }
+
+#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
+
+int main(int argc, char *argv[]) {
+    int32_t arr[] = {99, 95, 90, 85, 80, 20, 75, 15, 10, 5};
+    uint32_t const arr_size = ARRAY_SIZE(arr);
+
+    int32_t res[arr_size];
+    /* 调用make_list并将reverse_toarray作为"延续"传递 */
+    make_list(arr_size, arr, Nil, reverse_toarray, res);
+
+    /* 输出反转后的数组 */
+    void_map_array(print_val, arr_size, res);
+    printf("\n");
+    return 0;
+}
+
+/* 从数组构建链表 */
+void make_list(uint32_t const arr_size,
+               int32_t const arr[],
+               int_list_t lst,
+               MakeListCallback const cb,
+               CPS_Result res) {
+    if (!arr_size) {
+        cb(lst, res);  // 调用延续，传递结果
+        return;
+    }
+    make_list(arr_size - 1, arr,
+        &(node_t){.val = arr[arr_size - 1], .next = lst}, cb, res);
+}
+
+/* 将链表转换为数组 */
+void list2array(int_list_t list, CPS_Result res) {
+    if (Nil == list) return;
+    int32_t *array = res;
+    array[0] = list->val;
+    list2array(list->next, array + 1);
+}
+
+/* 反转链表 */
+void reverse(int_list_t list,
+             int_list_t rlist, /* 已反转的部分 */
+             ReversedListCallback const cb,
+             CPS_Result res) {
+    if (Nil == list) {
+        cb(rlist, res);  // 到达末尾，调用延续
+        return;
+    }
+    reverse(list->next, &(node_t){.val = list->val, .next = rlist},
+            cb, res);
+}
+
+/* 遍历数组并对每个元素执行操作 */
+void void_map_array(VoidMappable const cb,
+                    uint32_t const size,
+                    int32_t const *const arr) {
+    if (!size) return;
+    cb(arr[0]);
+    void_map_array(cb, size - 1, arr + 1);
+}
+```
+
+### 执行流程分析
+
+上述代码的执行顺序展示了CPS的精髓：
+
+```
+main -->
+    make_list -->
+      reverse_toarray -->
+        reverse -->
+            list2array -->
+                void_map_array
+```
+
+关键点：
+
+1. **不可变性**：`typedef struct __int_list const *const int_list_t` 定义了一个const结构体指针，且该指针的内存地址和内含值无法通过局部变量改变，体现了FP（函数式编程）的精神。
+
+2. **回调函数指针**：`MakeListCallback` 是一个函数指针类型，用于接收 `reverse_toarray` 这样的函数。通过 `cb(lst, res)` 将构建好的链表传递给下一个处理步骤。
+
+3. **延迟计算**：指针在这里不仅是内存地址，更是"接下来做什么"的承诺。每个函数通过函数指针指定计算完成后的下一步操作。
+
+4. **递归与延续**：在 `reverse` 函数中，递归的终止条件是当 `list` 为 `Nil` 时，此时调用延续 `cb(rlist, res)` 将结果传递下去。
+
+### 指针与CPS的哲学联系
+
+从更深层次看，CPS中的函数指针与数据指针有相似的抽象本质：
+
+| 指针类型 | 存储的内容 | 代表的能力 |
+|---------|-----------|-----------|
+| `int *p` | 内存地址 | 将来访问该位置的能力 |
+| `void (*cb)(int)` | 代码地址 | 将来执行该计算的能力 |
+| `void *ctx` | 上下文指针 | 将来访问相关数据的能力 |
+
+CPS风格通过函数指针将这种"延迟能力"发挥到极致——程序不再通过返回值传递数据，而是通过调用延续来传递控制流和数据。
+
+这种风格的优势：
+- **显式控制流**：没有隐式的返回，每个步骤都清晰可见
+- **易于组合**：可以将多个延续串联起来，形成处理管道
+- **状态隔离**：每个函数只使用局部变量，避免了副作用
+
+虽然CPS在C语言中不如在函数式语言中那样自然，但理解这种风格能帮助我们更好地掌握指针作为"计算延续"的本质。
+
+## 5.6 函数指针：一等函数的幻觉与CPS实现
+
+C语言不支持一等函数（first-class functions），但函数指针给了我们一个近似。更重要的是，函数指针是实现CPS（Continuation Passing Style）的基础。
+
+### 基础示例
 
 ```c
 #include <stdio.h>
@@ -176,16 +334,109 @@ int main(void) {
 }
 ```
 
-函数指针的类型语法很奇特：
+### 函数指针的类型语法
+
+函数指针的类型语法很奇特，需要仔细理解：
 
 ```c
-int (*fp)(int, int);     // fp 是指向函数的指针
-int *fp(int, int);       // fp 是返回指针的函数（不同！）
-int (*fp[10])(int);      // fp 是函数指针数组
+int (*fp)(int, int);     // fp 是指向函数的指针（接受两个int，返回int）
+int *fp(int, int);       // fp 是返回int*的函数（不同！）
+int (*fp[10])(int);      // fp 是函数指针数组（10个元素，每个指向接受int返回int的函数）
 int (*(*fp)[10])(int);   // fp 是指向函数指针数组的指针
 ```
 
-可以使用`typedef`来简化，或者使用C23的`typeof`。
+**记忆口诀**：`(*fp)` 表示 `fp` 是一个指针。如果去掉 `(*fp)` 后剩下 `int (int, int)`，那就是一个函数类型；如果去掉后剩下 `int *`，那就是返回指针的函数。
+
+可以使用 `typedef` 来简化：
+
+```c
+typedef int (*IntFunc)(int);           // IntFunc是函数指针类型
+typedef void (*Callback)(void *ctx);   // 带上下文的回调类型
+```
+
+C23引入了 `typeof`，可以更方便地声明：
+
+```c
+typeof(int (*)(int, int)) fp;          // fp的类型是"指向接受两个int返回int的函数的指针"
+```
+
+### 函数指针与CPS的实战模式
+
+在实际应用中，函数指针与CPS结合有以下几种常见模式：
+
+**模式1：错误处理延续**
+
+```c
+typedef void (*SuccessCallback)(void *result, void *ctx);
+typedef void (*ErrorCallback)(int error_code, const char *msg, void *ctx);
+
+void read_file(const char *path,
+               SuccessCallback on_success,
+               ErrorCallback on_error,
+               void *ctx) {
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        on_error(errno, strerror(errno), ctx);  // 调用错误延续
+        return;
+    }
+    // ... 读取文件 ...
+    on_success(buffer, ctx);  // 调用成功延续
+}
+```
+
+**模式2：状态机驱动**
+
+```c
+typedef struct State State;
+typedef State *(*StateFunc)(State *s, Event e);
+
+struct State {
+    StateFunc handler;
+    void *data;
+};
+
+// 状态转换通过返回新的状态函数指针实现
+State *state_idle(State *s, Event e) {
+    if (e.type == EV_START) {
+        return state_running(s, e);  // 转换到running状态
+    }
+    return s;  // 保持当前状态
+}
+```
+
+**模式3：异步回调链**
+
+```c
+typedef void (*AsyncCallback)(void *result, void (*next)(void *), void *ctx);
+
+// 链式异步操作
+void async_step1(void *input, AsyncCallback cb, void *ctx);
+void async_step2(void *input, AsyncCallback cb, void *ctx);
+void async_step3(void *input, AsyncCallback cb, void *ctx);
+
+// 通过函数指针将多个异步步骤串联
+void run_pipeline(void *initial_data) {
+    async_step1(initial_data, async_step2,
+        async_step2, async_step3,
+        async_step3, final_handler,
+        NULL
+    );
+}
+```
+
+### 函数指针与数据指针的统一视角
+
+从抽象的角度看，函数指针和数据指针都是"地址"，都代表一种"间接访问"的能力：
+
+| 特性 | 数据指针 (`T *`) | 函数指针 (`R (*)(Args...)`) |
+|-----|-----------------|---------------------------|
+| 存储内容 | 数据对象的地址 | 代码（函数）的地址 |
+| 解引用 | `*p` 获取数据 | `fp()` 执行函数 |
+| 算术运算 | 支持（`p+1`） | 不支持（未定义行为） |
+| 转换为 `void*` | 可以 | 不可以（C标准未定义） |
+| 作为延续 | 指向未来数据的承诺 | 指向未来计算的承诺 |
+
+理解这种统一性，有助于我们在设计API时灵活运用指针，无论是传递数据还是传递行为。
 
 ## 5.7 空指针与无效指针
 
@@ -309,12 +560,70 @@ void get_buffer2(char **buf) {
 
 5. 研究C11的`_Generic`关键字。如何用它来实现类型安全的`max`宏，处理不同指针类型？
 
+6. **CPS实践**：将以下直接风格的递归阶乘函数改写为CPS风格：
+
+```c
+// 直接风格
+int factorial(int n) {
+    if (n <= 1) return 1;
+    return n * factorial(n - 1);
+}
+
+// 改写为CPS风格，使用函数指针传递延续
+typedef void (*FactCallback)(int result, void *ctx);
+void factorial_cps(int n, FactCallback cb, void *ctx);
+```
+
+7. **延续组合**：实现一个`compose`函数，将两个CPS风格的函数组合成一个：
+
+```c
+typedef void (*CPSFunc)(int x, void (*k)(int), void *ctx);
+
+// 返回一个新的CPS函数，先执行f，再将结果传给g
+CPSFunc compose(CPSFunc f, CPSFunc g);
+```
+
+8. **函数指针数组**：实现一个简单的计算器，使用函数指针数组来根据操作符选择对应的运算函数：
+
+```c
+typedef int (*OpFunc)(int, int);
+
+// 支持 +, -, *, / 四种运算
+// 使用函数指针数组实现O(1)的操作符查找
+int calculate(char op, int a, int b);
+```
+
+9. **异步回调链**：实现一个简化的文件处理流水线，使用CPS风格串联多个处理步骤：
+
+```c
+typedef void (*FileCallback)(const char *content, void (*next)(const char *), void *ctx);
+
+// 步骤：读取文件 -> 去除空白 -> 转换为大写 -> 写入文件
+void pipeline(const char *input_path, const char *output_path);
+```
+
+10. **不可变链表与CPS**：参考本章5.5节的链表反转示例，实现一个使用CPS风格的`filter`函数，根据条件过滤链表元素：
+
+```c
+typedef bool (*PredFunc)(int32_t val, void *ctx);
+typedef void (*FilterCallback)(int_list_t result, CPS_Result res);
+
+// 使用CPS风格：过滤完成后调用cb传递结果
+void filter(int_list_t list, PredFunc pred, void *ctx,
+            FilterCallback cb, CPS_Result res);
+```
+
 ## 5.11 延伸阅读
 
 - K&R, Chapter 5 (Pointers and Arrays)
 - Expert C Programming, Chapter 4 (The Shocking Truth about C Arrays and Pointers)
 - Pierce, "Types and Programming Languages", Chapter 5 (The Untyped Lambda-Calculus)
+- [Functional Programming 风格的 C 语言实现](https://hackmd.io/@sysprog/c-functional-programming) - 深入理解CPS与函数指针的结合
+- [Why Functional Programming Matters](http://www.cs.kent.ac.uk/people/staff/dat/miranda/whyfp90.pdf) - 理解函数式编程的核心思想
+- Linux Kernel源码中的`container_of`宏实现 - 理解指针运算的高级技巧
 
 ---
 
-> "指针是C语言的灵魂，也是它的诅咒。它让我们可以直接操纵内存，构建高效的数据结构；也让我们可以搬起石头砸自己的脚，在运行时制造出各种噩梦。但如果我们把指针看作'延续'——一种延迟的计算，一种未来的承诺——它就变得不那么可怕了。就像王小波说的：'生活就是个缓慢受锤的过程'，指针也是个缓慢学习的过程。但一旦掌握，你就拥有了直接对话计算机硬件的能力。"
+> "指针是C语言的灵魂，也是它的诅咒。它让我们能够直接操纵内存，构建高效的数据结构；也让我们可以搬起石头砸自己的脚，在运行时制造出各种噩梦。但如果我们把指针看作'延续'——一种延迟的计算，一种未来的承诺——它就变得不那么可怕了。就像王小波说的：'生活就是个缓慢受锤的过程'，指针也是个缓慢学习的过程。但一旦掌握，你就拥有了直接对话计算机硬件的能力。"
+>
+> 当我们将函数指针与CPS风格结合，C语言也能展现出函数式编程的优雅。指针不再只是内存地址，而是计算的延续、未来的承诺。这种视角的转变，或许能让我们在 imperative 与 functional 之间找到一种平衡。"
